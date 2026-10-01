@@ -147,7 +147,7 @@ def build_week_dates(games):
     """
     g = games[games["seasonType"] == "regular"].copy()
     g["gdate"] = (pd.to_datetime(g["startDate"], utc=True)
-                  .dt.tz_convert("US/Eastern").dt.date)
+                  .dt.tz_convert("America/New_York").dt.date)
     return g.groupby(["season", "week"])["gdate"].agg(["min", "max"])
 
 

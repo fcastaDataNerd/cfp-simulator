@@ -67,7 +67,7 @@ def load_base(base_dir):
     b.sched = games[games["season"] == SEASON].copy().reset_index(drop=True)
     b.week_of = dict(zip(b.sched["id"], b.sched["week"]))
     b.played = set(b.sched.loc[b.sched["completed"].fillna(False).astype(bool), "id"])
-    gd = pd.to_datetime(b.sched["startDate"], utc=True).dt.tz_convert("US/Eastern").dt.date
+    gd = pd.to_datetime(b.sched["startDate"], utc=True).dt.tz_convert("America/New_York").dt.date
     b.cutoff = gd.groupby(b.sched["week"]).max().to_dict()
     b.cutoff[CCG_WEEK] = SELECTION_DAY
     b.weeks = sorted(int(w) for w in b.sched["week"].unique())

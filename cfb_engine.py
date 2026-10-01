@@ -48,7 +48,7 @@ def prepare_games(games, picks=None):
     """
     g = games.copy()
     g["startDate"] = pd.to_datetime(g["startDate"], errors="coerce", utc=True)
-    g["gdate"] = g["startDate"].dt.tz_convert("US/Eastern").dt.date
+    g["gdate"] = g["startDate"].dt.tz_convert("America/New_York").dt.date
     played = g["completed"].fillna(False).astype(bool) & (g["homePoints"] != g["awayPoints"])
     hw = pd.Series(np.where(played, g["homePoints"] > g["awayPoints"], np.nan), index=g.index, dtype=object)
     hw[~played] = np.nan
