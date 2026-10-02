@@ -266,7 +266,17 @@ RESUME_COLS = {"elo": st.column_config.NumberColumn("Elo", format="%.0f"),
                "qual_win_11_25_elo": st.column_config.NumberColumn("wins v 11-25", format="%d"),
                "elo_trend": st.column_config.NumberColumn("Elo trend", format="%+.1f"),
                "is_power": st.column_config.CheckboxColumn("Power 4"),
-               "conf_elo_mean": st.column_config.NumberColumn("conf. Elo mean", format="%.0f")}
+               "conf_elo_mean": st.column_config.NumberColumn(
+                   "conf. Elo mean", format="%.0f",
+                   help="Mean Elo of the team's conference right now. Blank for independents (they have no "
+                        "conference); the model only uses it for a team that wins its title game.")}
+
+
+def blank_independents(df):
+    """Independents have no conference: show nothing instead of the all-FBS placeholder."""
+    df = df.copy()
+    df["conf_elo_mean"] = df["conf_elo_mean"].where(df["conference"] != "FBS Independents")
+    return df
 
 with t_rank:
     if not shown:
@@ -274,7 +284,7 @@ with t_rank:
                 "so the predicted poll and model scores are shown only once every game through week 9 has a "
                 "result. Below: every team's resume inputs as they stand now.")
         st.subheader(f"Resume inputs as of {state['as_of']} (sorted by Elo - not the committee model)")
-        t = state["resume_now"].copy()
+        t = blank_independents(state["resume_now"])
         t["record"] = t["team"].map(REC)
         st.dataframe(t[["elo_rank", "team", "record", "conference", "elo", "sor_elo", "qual_win_top10_elo",
                         "qual_win_11_25_elo", "elo_trend", "is_power", "conf_elo_mean"]],
@@ -298,6 +308,7 @@ with t_rank:
         rg = cs.ranges(base, state).get(j).drop(columns=["p_playoff", "p_bye"], errors="ignore")
         T = P_.merge(rg, on="team", how="left").merge(FC[["p_playoff", "p_bye", "p_champion"]], left_on="team",
                                                       right_index=True, how="left")
+        T = blank_independents(T)
         if j - 1 in state["preds"]:
             prev = state["preds"][j - 1].set_index("team")["rank"]
             T["move"] = (T["team"].map(prev) - T["rank"]).fillna(0).astype(int)
@@ -312,7 +323,7 @@ with t_rank:
                           format_func=lambda n: f"Top {n}" if n < len(T) else "All teams")
         cols = (["rank", "team", "record", "conference", "move"] + (["real poll"] if j in base.real_polls else [])
                 + ["score", "gap_to_12th", "range", "p_playoff", "p_bye", "p_champion", "prior", "elo", "elo_rank", "sor_elo",
-                   "qual_win_top10_elo", "qual_win_11_25_elo", "elo_trend", "is_power"]
+                   "qual_win_top10_elo", "qual_win_11_25_elo", "elo_trend", "is_power", "conf_elo_mean"]
                 + (["ccg_status"] if j == 6 else []))
         cfg = dict(RESUME_COLS)
         cfg.update({
@@ -400,14 +411,6 @@ with t_stand:
     conf_list = [c_ for c_ in stn.RULES if c_ in set(SD["conference"])] + ["FBS Independents"]
     cf = st.selectbox("Conference", conf_list)
     t = SD[SD["conference"] == cf]
-    # conference strength = the mean Elo of its members right now (what the title-game bonus uses)
-    cmean = now.groupby("conference")["elo"].mean().sort_values(ascending=False)
-    if cf in cmean.index and cf != "FBS Independents":
-        st.caption(f"Conference Elo mean: **{cmean[cf]:.0f}** - {list(cmean.index).index(cf) + 1} of "
-                   f"{len(cmean) - int('FBS Independents' in cmean.index)} conferences "
-                   f"(strongest {cmean.drop('FBS Independents', errors='ignore').index[0]} "
-                   f"{cmean.drop('FBS Independents', errors='ignore').iloc[0]:.0f}). A title-game win is worth more "
-                   "the higher this is.")
     if t["division"].notna().any():
         for dv, part in zip(st.columns(t["division"].nunique()), sorted(t["division"].dropna().unique())):
             with dv:
@@ -445,6 +448,7 @@ with t_team:
     order = list(now.sort_values("elo_rank").index)
     tm = st.selectbox("Team", order)
     r = now.loc[tm]
+    CONF_MEAN_TXT = ("none (independent)" if r["conference"] == "FBS Independents" else f"{r['conf_elo_mean']:.0f}")
     c = st.columns(6)
     c[0].metric("Record", REC[tm])
     c[1].metric("Elo", f"{r['elo']:.0f}", f"rank {int(r['elo_rank'])}", delta_color="off")
@@ -505,7 +509,8 @@ with t_team:
         st.markdown(f"**Model score {row['score_stage1']:.2f}** (the points column added up) -> rank "
                     f"**{int(row['rank'])}** in {release_name(jt)}, {row['gap_to_12th']:+.2f} against the #12 line.{moved}")
         st.caption(f"Record at this release {int(row['wins'])}-{int(row['losses'])} | raw strength of record "
-                   f"{row['sor_elo']:.3f} | Elo rank {int(row['elo_rank'])} | conference Elo mean {row['conf_elo_mean']:.0f} | "
+                   f"{row['sor_elo']:.3f} | Elo rank {int(row['elo_rank'])} | conference Elo mean "
+                   f"{'none (independent)' if row['conference'] == 'FBS Independents' else format(row['conf_elo_mean'], '.0f')} | "
                    f"prior rank used: {'none' if pd.isna(row['prior_rank']) else int(row['prior_rank'])}"
                    + ("" if pd.isna(row["anchor_rank"]) else f" | last real poll: {int(row['anchor_rank'])}")
                    + ". Scores are comparable only within a release.")
@@ -531,7 +536,7 @@ with t_team:
             (FEATURE_TEXT["qual_win_top10_elo"], int(r["qual_win_top10_elo"])),
             (FEATURE_TEXT["qual_win_11_25_elo"], int(r["qual_win_11_25_elo"])),
             (FEATURE_TEXT["elo_trend_later"], round(float(r["elo_trend"]), 2) if pd.notna(r["elo_trend"]) else 0.0),
-            ("conference Elo mean (used with a title-game win)", round(float(r["conf_elo_mean"]), 1)),
+            ("conference Elo mean (used with a title-game win)", CONF_MEAN_TXT),
             ("prior poll / title game inputs", "not defined yet")]
         st.dataframe(pd.DataFrame(vals, columns=["input", "value"]).astype({"value": str}), hide_index=True, width="stretch",
                      height=35 * len(vals) + 40)
