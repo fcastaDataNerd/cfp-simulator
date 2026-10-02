@@ -277,7 +277,9 @@ def run(base, pl, picks=None, ccg_picks=None, po_picks=None, n_sims=500, seed=0,
         if j > 1:
             X[..., ix["elo_trend_later"]] = f["elo_trend"]
         if extra is not None:
-            X[..., ix["ccg_won"]], X[..., ix["ccg_lost"]] = extra["won"], extra["lost"]
+            X[..., ix["ccg_won"]] = extra["won"]
+            if "ccg_lost" in ix:
+                X[..., ix["ccg_lost"]] = extra["lost"]
             X[..., ix["ccg_won_x_conf"]] = extra["won"] * (extra["conf_mean"] - M["conf_center"])
         sit, k = cm.situation(j, real)
         if sit == "real":

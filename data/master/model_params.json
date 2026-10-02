@@ -1,5 +1,5 @@
 {
- "version": "ordinal v3.3 (v3.2 + exports the trained model for the app)",
+ "version": "ordinal v3.4 (model unchanged from v3.3; cell 6c tests title-game alternatives)",
  "variant": "scen_anchor_realfull",
  "feats": [
   "loss_ge1",

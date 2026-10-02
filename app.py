@@ -30,7 +30,7 @@ FEATURE_TEXT = {
     "qual_win_11_25_elo": "wins over teams now ranked 11-25 by Elo",
     "elo_trend_later": "Elo trend, last 3 games (counts from release 2)",
     "ccg_won": "won its conference championship game (Selection Day)",
-    "ccg_lost": "lost its conference championship game (Selection Day)",
+    "ccg_lost": "lost its conference championship game (offsets the extra loss - Selection Day)",
     "ccg_won_x_conf": "won the title game x (conference Elo mean - 1500)",
     "prior_real_in25": "in the top 25 of the real previous CFP poll",
     "prior_real_pts": "points in the real previous CFP poll (26 - rank)",
@@ -84,6 +84,16 @@ FC_NOTE = (f"Forecast: {N_SIMS} simulated seasons played out from {f_label}."
            + (f" {n_ignored} pick(s) in weeks that are not complete yet are not in it - it updates when the week is "
               "fully picked." if n_ignored else ""))
 latest = state["preds"][shown[-1]].set_index("team") if shown else None
+# the poll shown next to teams: the real CFP poll for that release if it exists, else ours
+POLL_RANK, POLL_LABEL = {}, ""
+if shown:
+    _j = shown[-1]
+    if _j in base.real_polls:
+        POLL_RANK, POLL_LABEL = dict(base.real_polls[_j]), f"the real CFP poll ({'Selection Day' if _j == 6 else 'release ' + str(_j)})"
+    else:
+        POLL_RANK = dict(zip(latest.index, latest["rank"]))
+        POLL_LABEL = (f"our predicted {'Selection Day ranking' if _j == 6 else 'poll, release ' + str(_j)}"
+                      + (" (provisional)" if state["release_info"].set_index("release").loc[_j, "status"] == "provisional" else ""))
 
 
 def pct(p):
@@ -377,14 +387,27 @@ def standings_table(t):
     t["conf"] = t["conf_w"].astype(str) + "-" + t["conf_l"].astype(str)
     t["overall"] = t["w"].astype(str) + "-" + t["l"].astype(str)
     t["Elo rank"] = t["team"].map(now["elo_rank"])
-    st.dataframe(t[["place", "team", "conf", "overall", "Elo rank"]], hide_index=True, width="stretch",
-                 height=35 * len(t) + 40)
+    cols = ["place", "team", "conf", "overall"]
+    if latest is not None:                                  # once a poll exists, show the CFP rank too
+        t["CFP rank"] = t["team"].map(lambda x: str(int(POLL_RANK[x])) if POLL_RANK.get(x, 99) <= 25 else "")
+        cols.append("CFP rank")
+    st.dataframe(t[cols + ["Elo rank"]], hide_index=True, width="stretch", height=35 * len(t) + 40,
+                 column_config={"CFP rank": st.column_config.TextColumn(
+                     "CFP rank", help=f"Top 25 of {POLL_LABEL} (blank = not ranked)")})
 
 
 with t_stand:
     conf_list = [c_ for c_ in stn.RULES if c_ in set(SD["conference"])] + ["FBS Independents"]
     cf = st.selectbox("Conference", conf_list)
     t = SD[SD["conference"] == cf]
+    # conference strength = the mean Elo of its members right now (what the title-game bonus uses)
+    cmean = now.groupby("conference")["elo"].mean().sort_values(ascending=False)
+    if cf in cmean.index and cf != "FBS Independents":
+        st.caption(f"Conference Elo mean: **{cmean[cf]:.0f}** - {list(cmean.index).index(cf) + 1} of "
+                   f"{len(cmean) - int('FBS Independents' in cmean.index)} conferences "
+                   f"(strongest {cmean.drop('FBS Independents', errors='ignore').index[0]} "
+                   f"{cmean.drop('FBS Independents', errors='ignore').iloc[0]:.0f}). A title-game win is worth more "
+                   "the higher this is.")
     if t["division"].notna().any():
         for dv, part in zip(st.columns(t["division"].nunique()), sorted(t["division"].dropna().unique())):
             with dv:
@@ -393,7 +416,9 @@ with t_stand:
     else:
         standings_table(t)
     st.caption("Order = the conference's own tiebreak procedure, so tied teams appear in the order they would be "
-               "seeded. Conference record never includes the title game; the overall record does.")
+               "seeded. Conference record never includes the title game; the overall record does."
+               + (f" CFP rank = {POLL_LABEL}." if latest is not None else " The CFP rank column appears once the "
+                  "first poll exists (every game through week 9 has a result)."))
     m = state["matchups"]
     m = m[m["conference"] == cf]
     if len(m):
