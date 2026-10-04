@@ -261,7 +261,9 @@ with t_sched:
 RESUME_COLS = {"elo": st.column_config.NumberColumn("Elo", format="%.0f"),
                "elo_rank": st.column_config.NumberColumn("Elo rank", format="%d"),
                "sor_elo": st.column_config.NumberColumn("strength of record", format="%.2f",
-                                                        help="Higher = harder for an average top-25 team to match"),
+                                                        help="Higher = harder for an average top-25 team to match. "
+                                                             "Shown raw because it is easier to read; the model "
+                                                             "itself uses log(strength of record + 0.05)."),
                "qual_win_top10_elo": st.column_config.NumberColumn("wins v top 10", format="%d"),
                "qual_win_11_25_elo": st.column_config.NumberColumn("wins v 11-25", format="%d"),
                "elo_trend": st.column_config.NumberColumn("Elo trend", format="%+.1f"),
@@ -452,7 +454,8 @@ with t_team:
     c = st.columns(6)
     c[0].metric("Record", REC[tm])
     c[1].metric("Elo", f"{r['elo']:.0f}", f"rank {int(r['elo_rank'])}", delta_color="off")
-    c[2].metric("Strength of record", f"{r['sor_elo']:.2f}")
+    c[2].metric("Strength of record", f"{r['sor_elo']:.2f}",
+                help="Raw value, easier to read. The model uses log(strength of record + 0.05) - see the inputs table.")
     c[3].metric("Wins vs Elo top 10", int(r["qual_win_top10_elo"]))
     c[4].metric("Wins vs Elo 11-25", int(r["qual_win_11_25_elo"]))
     c[5].metric("Elo trend", f"{r['elo_trend']:+.1f}" if pd.notna(r["elo_trend"]) else "-")
@@ -472,7 +475,10 @@ with t_team:
 
     if shown:
         st.subheader("Every model input, and what it is worth")
-        jt = st.selectbox("Release", shown, index=len(shown) - 1, format_func=release_name, key="team_release")
+        if ss.get("_team_latest") != shown[-1] or ss.get("team_release") not in shown:
+            ss["team_release"] = shown[-1]                  # a new release appeared: show it
+            ss["_team_latest"] = shown[-1]
+        jt = st.selectbox("Release", shown, format_func=release_name, key="team_release")
         row = state["preds"][jt].set_index("team").loc[tm]
         beta = dict(zip(base.M["feats"], base.M["beta"]))
         sit_t = row["situation"]
@@ -505,10 +511,13 @@ with t_team:
                                     "weight": st.column_config.NumberColumn("model weight", format="%.4f"),
                                     "points": st.column_config.NumberColumn("points = value x weight", format="%+.2f")})
         moved = "" if row["rank"] == row["rank_stage1"] else (
-            f" The head-to-head / common-opponent step then moved it from {int(row['rank_stage1'])} to {int(row['rank'])}.")
+            f" The head-to-head / common-opponent step then moved it from {int(row['rank_stage1'])} to "
+            f"{int(row['rank'])}, so on the Rankings tab it carries the score of the place it moved into, "
+            f"{row['score']:.2f}.")
         st.markdown(f"**Model score {row['score_stage1']:.2f}** (the points column added up) -> rank "
                     f"**{int(row['rank'])}** in {release_name(jt)}, {row['gap_to_12th']:+.2f} against the #12 line.{moved}")
-        st.caption(f"Record at this release {int(row['wins'])}-{int(row['losses'])} | raw strength of record "
+        st.caption(f"For reading, not model inputs: record at this release {int(row['wins'])}-{int(row['losses'])} | "
+                   f"raw strength of record "
                    f"{row['sor_elo']:.3f} | Elo rank {int(row['elo_rank'])} | conference Elo mean "
                    f"{'none (independent)' if row['conference'] == 'FBS Independents' else format(row['conf_elo_mean'], '.0f')} | "
                    f"prior rank used: {'none' if pd.isna(row['prior_rank']) else int(row['prior_rank'])}"
@@ -530,7 +539,8 @@ with t_team:
         L = int(r["losses"])
         vals = [("losses", L)] + [(FEATURE_TEXT[f"loss_ge{k}"], int(L >= k)) for k in range(1, 6)] + [
             (FEATURE_TEXT["elo"], round(float(r["elo"]), 1)),
-            ("strength of record (raw)", round(float(r["sor_elo"]), 3)),
+            ("strength of record, raw (for reading only - the model uses the log version below)",
+             round(float(r["sor_elo"]), 3)),
             (FEATURE_TEXT["sor_log"], round(float(np.log(r["sor_elo"] + base.M["sor_shift"])), 3)),
             (FEATURE_TEXT["is_power"], int(bool(r["is_power"]))),
             (FEATURE_TEXT["qual_win_top10_elo"], int(r["qual_win_top10_elo"])),
@@ -674,6 +684,9 @@ a team's odds of being picked first by about 2.7.
 - *vs #12 line*: score minus the 12th team's score. A gap of 1.0 = about a 73% chance the committee ranks the
   higher team first.
 - *strength of record*: how hard it would be for an average top-25 team to have this record against this schedule.
+  Tables show the raw value because it reads more easily; the model uses log(strength of record + 0.05).
+- *Elo trend*: the weighted average of a team's Elo change over its last three GAMES. An idle week (including a
+  championship weekend a team does not play in) leaves it unchanged.
 
 Model: `{base.M['version']}` - trained on {base.M['trained_on'][0]}-{base.M['trained_on'][-1]} committee polls.
 """)
