@@ -6,14 +6,15 @@
     tab  = fc.summarize(plan, out)                               # one row per team
 
 Each simulated season, in order:
-  1. every open regular-season game is drawn from its Elo win probability, in date order,
-     with Elo updating after each game (real results and your picks are fixed);
+  1. every open regular-season game is drawn from the game model's win probability (Elo for
+     FCS games), in date order, with Elo updating after each game as always - the committee
+     model's inputs need it (real results and your picks are fixed);
   2. the committee's poll is produced at every release - one of the 100 bootstrap versions of
      the model per season, plus the committee's own randomness (Plackett-Luce noise), each
      poll feeding the next as the prior exactly as in cfb_model;
   3. standings + each conference's tiebreakers set the ten championship games (cfb_standings);
   4. those games are drawn, then Selection Day's poll, then the bracket rules (cfb_bracket);
-  5. the playoff is drawn from Elo, round by round.
+  5. the playoff is drawn round by round (title and playoff games: the game model's matchup table).
 
 It is the same logic as cfb_season, written on arrays so that ALL the seasons are played at
 once: `cfb_season.build_state` costs 1-2 seconds per season, this costs a few milliseconds.
@@ -86,10 +87,17 @@ def build_plan(base):
     pre = g[g["week"] <= cs.LAST_REGULAR_WEEK].reset_index(drop=True)      # weeks 1-13
     post = g[g["week"] > cs.CCG_WEEK].reset_index(drop=True)               # after Selection Day (Army-Navy)
     for name, d in (("pre", pre), ("post", post)):
+        # pm: the game model's P(home wins) - what the winner is drawn from (NaN -> Elo, FCS games)
+        pm = np.array([(base.wp.game(i) or (np.nan,))[0] if base.wp is not None else np.nan for i in d["id"]], float)
         setattr(pl, name, dict(id=d["id"].to_numpy(), h=d["h"].to_numpy(), a=d["a"].to_numpy(),
                                adj=np.where(d["neutral"], 0.0, P["HFA"]), mult=d["mult"].to_numpy(float),
                                real=d["real"].to_numpy(), n=len(d), home=d["homeTeam"].to_numpy(),
-                               away=d["awayTeam"].to_numpy()))
+                               away=d["awayTeam"].to_numpy(), pm=pm))
+    # the game model for any two FBS teams (title games, playoff): P(row team beats column team)
+    if base.wp is not None:
+        pl.PH, pl.PN = base.wp.matrices(pl.teams)
+    else:
+        pl.PH = pl.PN = np.full((n, n), np.nan)
     pl.bnd = {j: int((pre["gdate"] <= base.cutoff[w]).sum()) for j, w in cs.RELEASE_WEEK.items() if j <= 5}
 
     # ---- each team's games, as slots -------------------------------------------------------------------
@@ -233,7 +241,8 @@ def run(base, pl, picks=None, ccg_picks=None, po_picks=None, n_sims=500, seed=0,
                         snaps[j] = R[:, :n].copy()
             h, a = part["h"][q], part["a"][q]
             e = 1.0 / (1.0 + 10.0 ** ((R[:, a] - (R[:, h] + part["adj"][q])) / 400.0))
-            hw = (Ux[:, q] < e) if kn[q] < 0 else np.full(S, kn[q] == 1)
+            pdraw = e if np.isnan(part["pm"][q]) else part["pm"][q]      # who wins: the game model
+            hw = (Ux[:, q] < pdraw) if kn[q] < 0 else np.full(S, kn[q] == 1)   # Elo then moves as always
             d = K * part["mult"][q] * (hw - e)
             if h != FCS:
                 R[:, h] += d
@@ -339,7 +348,8 @@ def run(base, pl, picks=None, ccg_picks=None, po_picks=None, n_sims=500, seed=0,
         h, a = C1[:, ci], C2[:, ci]
         adj = 0.0 if c["neutral"] else P["HFA"]
         e = 1.0 / (1.0 + 10.0 ** ((R[ar, a] - (R[ar, h] + adj)) / 400.0))
-        hw = Ucc[:, ci] < e
+        pm = (pl.PN if c["neutral"] else pl.PH)[h, a]
+        hw = Ucc[:, ci] < np.where(np.isnan(pm), e, pm)
         w = pl.idx.get(ccg_picks.get(c["name"]), -1)
         hw = np.where(h == w, True, np.where(a == w, False, hw))
         d = K * (hw - e)                                                    # a conference game: no cross-conference boost
@@ -377,8 +387,9 @@ def run(base, pl, picks=None, ccg_picks=None, po_picks=None, n_sims=500, seed=0,
 
     def game(h, a, neutral, u, code):
         e = 1.0 / (1.0 + 10.0 ** ((R[ar, a] - (R[ar, h] + (0.0 if neutral else P["HFA"]))) / 400.0))
+        pm = (pl.PN if neutral else pl.PH)[h, a]
         w = pl.idx.get(po_picks.get(code), -1)
-        hw = np.where(h == w, True, np.where(a == w, False, u < e))
+        hw = np.where(h == w, True, np.where(a == w, False, u < np.where(np.isnan(pm), e, pm)))
         diff = np.array([bool(x) and bool(y) and x != y for x, y in zip(conf_names[h], conf_names[a])])
         d = K * np.where(diff, P["CROSS_CONF"], 1.0) * (hw - e)
         R[ar, h] += d

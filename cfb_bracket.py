@@ -131,18 +131,20 @@ def build_bracket(ranking, champs, rules="2026"):
     return dict(rules=rules, field=fld, bumped=bumped, replaced_by=replaced_by, games=pd.DataFrame(games))
 
 
-def advance_odds(bracket, elo, p, results=None):
+def advance_odds(bracket, elo, p, results=None, wp=None):
     """Chance each team wins its first-round game, reaches the semifinal, the final, and wins
-    the title, from Elo win probabilities (home field in the first round only). Exact, using
-    today's ratings; the app re-computes as games are picked and Elo moves.
+    the title (home field in the first round only). Exact. Win probabilities from `wp(a, b,
+    neutral)` = P(a beats b), a at home when not neutral (the app passes the game model);
+    without it, from Elo.
     results: {game code: winner} for playoff games already decided ("R1-1" .. "FINAL")."""
     results = results or {}
     f = bracket["field"]
     s2t = dict(zip(f["seed"], f["team"]))
 
-    def wp(a, b, neutral):                                   # P(a beats b), a = home when not neutral
+    def elo_wp(a, b, neutral):
         adj = 0.0 if neutral else p["HFA"]
         return 1.0 / (1.0 + 10.0 ** ((elo[b] - (elo[a] + adj)) / 400.0))
+    wp = wp or elo_wp
 
     def play(da, db, neutral=True):
         """Distributions {team: prob} for the two sides -> distribution of the winner."""

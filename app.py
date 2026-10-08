@@ -51,6 +51,7 @@ N_SIMS = 1000                                  # simulated seasons per forecast
 
 
 base = get_base()
+WP_ASOF = f" ({base.wp.as_of})" if base.wp is not None and base.wp.as_of else ""
 ss = st.session_state
 for k in ("picks", "ccg_picks", "po_picks"):
     ss.setdefault(k, {})
@@ -133,9 +134,9 @@ with st.sidebar:
         st.success(f"Champion: {state['champion']}")
 
     st.subheader("Simulate one season")
-    st.caption("One random season, not a forecast: each open game's winner is drawn once from its Elo win "
-               "probability, week by week, so ratings update before the next week is drawn. Your own picks "
-               "are kept. Press again for a different season.")
+    st.caption("One random season, not a forecast: each open game's winner is drawn once from the game model's "
+               "win probability (Elo for games against FCS teams), week by week. Your own picks are kept. Press "
+               "again for a different season.")
     open_weeks = sorted(int(w) for w in G.loc[(G["status"] == "open") & (G["stage"] == "regular"), "week"].unique())
     targets = {f"Week {w}": w for w in open_weeks}
     if ((G["stage"] == "championship") & (G["status"] == "open")).any():
@@ -191,12 +192,13 @@ def _clear_pick(kind, ident):
 
 
 def game_row(r, kind, ident):
-    """One game: matchup, Elo win probability, and the pick control (or the real result)."""
+    """One game: matchup, the game model's spread and win probability, and the pick control (or the result)."""
     c1, c2, c3 = st.columns([5, 3, 4], vertical_alignment="center")
     c1.markdown(f"{tag(r.awayTeam)} &nbsp;at&nbsp; **{tag(r.homeTeam)}**" if not r.neutral
                 else f"{tag(r.awayTeam)} &nbsp;vs&nbsp; {tag(r.homeTeam)} &nbsp;*(neutral)*")
     fav, p = (r.homeTeam, r.p_home) if r.p_home >= 0.5 else (r.awayTeam, 1 - r.p_home)
-    c2.progress(float(r.p_home), text=f"{fav} {pct(p)}")
+    spread = "" if pd.isna(r.home_margin) else f" by {abs(r.home_margin):.1f}"
+    c2.progress(float(r.p_home), text=f"{fav}{spread} · {pct(p)}")
     if r.status == "final":
         score = "" if pd.isna(r.homePoints) else f" {int(r.awayPoints)}-{int(r.homePoints)}"
         c3.markdown(f"Final{score}: **{r.winner}**")
@@ -239,8 +241,10 @@ with t_sched:
         d = d[d["homeTeam"].isin(top) | d["awayTeam"].isin(top)]
     done = int((d["status"] != "open").sum())
     st.caption(f"{week_name(wk)}: {done} of {len(d)} games shown have a result. Home team in bold. The bar is the "
-               "Elo win probability - for a game already played or picked it is the probability BEFORE kickoff, "
-               "from both teams' Elo at that time. Click a team to pick it, the x to clear a pick.")
+               "game model's prediction: the favourite, the predicted margin (the spread) and the win probability "
+               "that margin implies. Played games show the prediction made before kickoff; games not yet played "
+               f"use every team's inputs as of the last update{WP_ASOF}. Games against FCS teams use Elo (no spread). "
+               "Click a team to pick it, the x to clear a pick.")
     if wk == cs.CCG_WEEK:
         for r in d.itertuples(index=False):
             st.markdown(f"**{r.ccg_conference}**")
@@ -357,8 +361,9 @@ with t_rank:
 # =============================================================================
 with t_fc:
     st.subheader(f"Season forecast as of {f_label}")
-    st.caption(FC_NOTE + " In each simulated season every open game is drawn from its Elo win probability (Elo "
-               "updating as it goes), the conference tiebreakers set the title games, the committee ranks the teams "
+    st.caption(FC_NOTE + " In each simulated season every open game is drawn from the game model's win probability "
+               "(Elo for FCS games; Elo still updates for the committee's inputs), the conference tiebreakers set the "
+               "title games, the committee ranks the teams "
                "(with its own randomness), the bracket rules pick the field, and the playoff is played. The same "
                "random draws are reused every time, so when you change results the odds move because of the "
                "results, not because of simulation noise.")
@@ -562,20 +567,25 @@ with t_team:
         home = g_.homeTeam == tm
         opp = g_.awayTeam if home else g_.homeTeam
         p = g_.p_home if home else 1 - g_.p_home
+        mg = g_.home_margin if home else -g_.home_margin
         res = "-" if g_.status == "open" else (("W" if g_.winner == tm else "L") + (" (pick)" if g_.status == "pick" else ""))
         wk_lab = {"regular": f"Week {int(g_.week)}", "championship": "Title game", "playoff": "Playoff"}[g_.stage]
         rows.append(dict(when=wk_lab, site="neutral" if g_.neutral else ("home" if home else "away"),
-                         opponent=tag(opp), win_prob=p, result=res,
+                         opponent=tag(opp), spread=None if pd.isna(mg) else round(float(mg), 1), win_prob=p, result=res,
                          elo_before=elo_move["elo_pre"].get(g_.id), opp_elo_before=elo_move["opp_elo_pre"].get(g_.id),
                          elo_after=elo_move["elo_post"].get(g_.id)))
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", height=35 * len(rows) + 40,
-                 column_config={"win_prob": st.column_config.ProgressColumn("win probability", format="percent",
+                 column_config={"spread": st.column_config.NumberColumn("predicted margin", format="%+.1f",
+                                                                        help="Game model: + = this team favoured by"),
+                                "win_prob": st.column_config.ProgressColumn("win probability", format="percent",
                                                                             min_value=0, max_value=1),
                                 "elo_before": st.column_config.NumberColumn("Elo at kickoff", format="%.0f"),
                                 "opp_elo_before": st.column_config.NumberColumn("opponent Elo at kickoff", format="%.0f"),
                                 "elo_after": st.column_config.NumberColumn("Elo after", format="%.0f")})
-    st.caption("For games with a result, the win probability is from both teams' Elo at kickoff (shown). For games "
-               "not yet picked it is from today's Elo. The opponent's record and rank are as of now.")
+    st.caption("Predicted margin and win probability: the game model - its prediction before kickoff for played "
+               "games, inputs as of the last update for the rest (FCS opponents: Elo, no margin). The Elo columns "
+               "are the committee model's Elo, at kickoff for games with a result. The opponent's record and rank "
+               "are as of now.")
 
 # =============================================================================
 # Championship games  (the picks themselves are under Schedule -> Week 14)
@@ -666,14 +676,21 @@ locked; Elo is carried over from every season since 2008. To pull in newly playe
 6. **Playoff.** Only Elo moves; the ranking is frozen. First round on campus, then neutral sites.
 
 **Four different things - do not mix them up**
-- *Simulate buttons*: ONE random season. Each open game is drawn once from its Elo win probability.
+- *Simulate buttons*: ONE random season. Each open game is drawn once from the game model's win probability.
 - *The forecast (Forecast tab; P(make playoff), P(bye), P(title) everywhere)*: {N_SIMS} seasons played out from
   the last completed week - games, tiebreakers, title games, the committee with its own randomness, the bracket
   rules, the playoff. It re-runs only when a week is completely picked, and reuses the same random draws so the
   odds move because of results, not simulation noise.
 - *Range in this poll*: uncertainty about the COMMITTEE in one release, given the results as they stand - 500
   simulated polls. No future games involved.
-- *Bracket odds*: exact probabilities of advancing, from Elo, given the field on the Bracket tab.
+- *Bracket odds*: exact probabilities of advancing, from the game model, given the field on the Bracket tab.
+
+**The game model (win probabilities and spreads).** A LightGBM model of the point margin (built like our college
+basketball model), from both teams' Elo and margin-of-victory Elo, opponent-adjusted efficiency (EPA per play,
+success rate, explosiveness), talent, returning production, the poll, Power 4 membership, conference strength and
+home field. The win probability is the one its predicted margin implies (a 7-point favourite wins about 68%).
+Future games use every team's inputs frozen as of the last weekly update, so a week-12 game is predicted as if it
+were played next week. FCS games use Elo.
 
 **The model score is additive**: each input's value times its weight, summed (Team tab). The ODDS are
 multiplicative: the chance the committee ranks A ahead of B is e^A / (e^A + e^B), so one extra point multiplies

@@ -32,6 +32,7 @@ import cfb_engine as eng
 import cfb_standings as st
 import cfb_model as cm
 import cfb_bracket as br
+import cfb_winprob as cw
 
 SEASON = 2026
 RELEASE_WEEK = {1: 9, 2: 10, 3: 11, 4: 12, 5: 13, 6: 14}       # release -> last game week it has seen
@@ -87,7 +88,21 @@ def load_base(base_dir):
     b.conf_of, b.is_fbs = info["conf"].to_dict(), (info["cls"] == "fbs").to_dict()
     b.fbs_teams = sorted(t for t, v in b.is_fbs.items() if v)
     b.cache = {}
+    b.wp = cw.load(base_dir)                                   # game-model win probabilities (None -> Elo)
     return b
+
+
+def game_p(base, gid, home, away, neutral, ratings):
+    """P(home wins) and predicted home margin for one game: the game model when it has the game
+    (any FBS-vs-FBS game, incl. title and playoff games via the matchup table), else Elo (FCS
+    games) with no margin."""
+    if base.wp is not None:
+        r = base.wp.game(gid) if gid < CCG_ID0 else None
+        if r is None:
+            r = base.wp.pair(home, away, bool(neutral))
+        if r is not None:
+            return r
+    return eng.win_prob(_rating(base, ratings, home), _rating(base, ratings, away), neutral, base.P), np.nan
 
 
 # =============================================================================
@@ -262,7 +277,8 @@ def build_state(base, picks, ccg_picks=None, po_picks=None):
             sched = pd.concat([sched, pd.DataFrame(po_rows)], ignore_index=True)
             g, ge, ratings, tg = _run(base, sched, all_picks)
         elo_now = {t: _rating(base, ratings, t) for t in b["field"]["team"]}
-        b["odds"] = br.advance_odds(b, elo_now, base.P, results=won)
+        b["odds"] = br.advance_odds(b, elo_now, base.P, results=won,
+                                    wp=lambda h, a, neu: game_p(base, -1, h, a, neu, ratings)[0])
         b["slots"] = slot
         S["bracket"], S["po_results"] = b, won
     S["playoff"] = pd.DataFrame(po_meta)
@@ -272,14 +288,16 @@ def build_state(base, picks, ccg_picks=None, po_picks=None):
     #      the championship game once it has a result
     S["standings"] = st.ordered_standings(tg, SEASON, None, rating_rank, cfp_rank, base.DIV)
 
-    # ---- every game, with its Elo win probability ---------------------------------------------------
-    # played / picked games: the probability BEFORE kickoff, from both teams' Elo at that time.
-    # open games: from today's Elo.
+    # ---- every game, with its win probability --------------------------------------------------------
+    # FBS vs FBS: the game model (played games: its prediction before kickoff; open games: inputs
+    # frozen at the last update; title / playoff games: the matchup table). FCS games: Elo -
+    # before kickoff for games played or picked, today's Elo for open games.
     pre = ge.set_index("gameId")["homeWinProb"].to_dict()
     gm = g[["id", "week", "seasonType", "gdate", "homeTeam", "awayTeam", "neutral", "hasResult", "isPick",
             "homeWon", "isConfChampionship", "homePoints", "awayPoints"]].copy()
-    gm["p_home"] = [pre[i] if i in pre else eng.win_prob(_rating(base, ratings, h), _rating(base, ratings, a), n, base.P)
-                    for i, h, a, n in zip(gm["id"], gm["homeTeam"], gm["awayTeam"], gm["neutral"])]
+    pm = [game_p(base, i, h, a, n, ratings) for i, h, a, n in zip(gm["id"], gm["homeTeam"], gm["awayTeam"], gm["neutral"])]
+    gm["home_margin"] = [m for _, m in pm]
+    gm["p_home"] = [p if not np.isnan(m) else pre.get(i, p) for (p, m), i in zip(pm, gm["id"])]
     gm["status"] = np.where(~gm["hasResult"], "open", np.where(gm["isPick"], "pick", "final"))
     gm["winner"] = np.where(gm["hasResult"], np.where(gm["homeWon"].fillna(False).astype(bool), gm["homeTeam"], gm["awayTeam"]), None)
     code_of = {m["id"]: m["code"] for m in po_meta}
@@ -348,7 +366,7 @@ def forecast_inputs(base, state, ccg_picks):
 
 
 # =============================================================================
-# Simulation - draw winners from the Elo win probabilities
+# Simulation - draw winners from the game model's win probabilities (Elo for FCS games)
 # =============================================================================
 def simulate(base, picks, ccg_picks, po_picks, scope, rng, week=None):
     """scope "week": the open games of regular week `week` (14 = championship games,
@@ -364,7 +382,7 @@ def simulate(base, picks, ccg_picks, po_picks, scope, rng, week=None):
         _, ratings = eng.run_elo(gq, base.P, start_ratings=base.ratings_start, start_season=base.start_season,
                                  conf=base.conf_hist)
         for i, h, a, n in zip(opn["id"], opn["homeTeam"], opn["awayTeam"], opn["neutral"]):
-            p = eng.win_prob(_rating(base, ratings, h), _rating(base, ratings, a), n, base.P)
+            p = game_p(base, i, h, a, n, ratings)[0]
             picks[i] = bool(rng.random() < p)
 
     def sim_ccg():
