@@ -16,7 +16,6 @@ import streamlit as st
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 import cfb_standings as stn
-import cfb_model as cm
 import cfb_season as cs
 import cfb_forecast as fc
 
@@ -292,29 +291,6 @@ with t_rank:
         st.dataframe(t[["elo_rank", "team", "record", "conference", "elo", "sor_elo", "qual_win_top10_elo",
                         "qual_win_11_25_elo", "elo_trend", "is_power", "conf_elo_mean"]],
                      hide_index=True, width="stretch", height=920, column_config=RESUME_COLS)
-
-        # ---- early look: the cold-start committee model on today's resumes -------------------------
-        st.subheader(f"Early look: the committee model on the resumes after week {state['complete_through']}")
-        st.caption("The first-release (cold start) formula applied now: no prior poll, Elo trend off, head-to-head "
-                   "step on. The model was trained on November polls, so this is 'how the committee would rank "
-                   "teams by its November standards if it ranked them today' - not a prediction of a real poll.")
-        cut = state["as_of"]
-        feat = state["resume_now"]
-        pool = set(feat.nsmallest(cs.POOL_N, "elo_rank")["team"]) | set(feat.nlargest(cs.POOL_N, "sor_elo")["team"])
-        rel_now = cm.Release(1, feat, is_first=True, is_sd=False, pairs=cm.pair_evidence(state["tg"], cs.SEASON, cut, pool))
-        E = cm.predict_season(base.M, [rel_now], {})[1]
-        E = E.merge(cm.summarize_sims(*cm.simulate_season(base.M, [rel_now], {}, rng=np.random.default_rng(0))[1]),
-                    on="team")
-        E["record"] = E["team"].map(REC)
-        E["range"] = E["range_lo"].round().astype(int).astype(str) + "-" + E["range_hi"].round().astype(int).astype(str)
-        E = blank_independents(E)
-        n_e = st.radio("Show", [25, 40], horizontal=True, format_func=lambda n: f"Top {n}", key="early_n")
-        cfg_e = dict(RESUME_COLS)
-        cfg_e.update({"score": st.column_config.NumberColumn("model score", format="%.2f"),
-                      "range": st.column_config.TextColumn("likely range")})
-        st.dataframe(E.head(n_e)[["rank", "team", "record", "conference", "score", "range", "elo", "elo_rank",
-                                  "sor_elo", "qual_win_top10_elo", "qual_win_11_25_elo", "is_power", "conf_elo_mean"]],
-                     hide_index=True, width="stretch", height=35 * n_e + 40, column_config=cfg_e)
     else:
         def lab(j):
             i = RI.loc[j]
