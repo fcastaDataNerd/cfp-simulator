@@ -40,17 +40,27 @@ FEATURE_TEXT = {
 }
 
 
-@st.cache_resource(show_spinner="Loading data, the model and Elo through last season (about 20 seconds, once)...")
-def get_base():
+@st.cache_resource(show_spinner="Loading data, the model and Elo through last season (about 20 seconds, once)...",
+                   max_entries=1)
+def get_base(data_stamp):
+    """Loaded once per version of the data. `data_stamp` (each data file's size and modification
+    time) changes whenever a weekly update is published, so the server reloads on its own instead
+    of serving the copy it loaded at start-up; max_entries=1 drops the old copy."""
     b = cs.load_base(BASE_DIR)
     b.plan = fc.build_plan(b)
     return b
 
 
+def data_stamp():
+    files = sorted((BASE_DIR / "data").glob("*.xlsx")) + sorted((BASE_DIR / "data" / "master").glob("*.json")) + \
+        sorted((BASE_DIR / "winprob" / "data" / "app").glob("*.csv"))
+    return tuple((f.name, f.stat().st_size, f.stat().st_mtime_ns) for f in files if f.exists())
+
+
 N_SIMS = 1000                                  # simulated seasons per forecast
 
 
-base = get_base()
+base = get_base(data_stamp())
 WP_ASOF = f" ({base.wp.as_of})" if base.wp is not None and base.wp.as_of else ""
 ss = st.session_state
 for k in ("picks", "ccg_picks", "po_picks"):
