@@ -222,8 +222,9 @@ def game_row(r, kind, ident):
         clr.button("x", key=f"clear_{r.id}", help="Clear this pick", on_click=_clear_pick, args=(kind, ident))
 
 
-(t_sched, t_rank, t_fc, t_stand, t_team, t_ccg, t_brk, t_how) = st.tabs(
-    ["Schedule", "Rankings", "Forecast", "Standings", "Team", "Championship games", "Bracket", "How it works"])
+(t_sched, t_rank, t_fc, t_stand, t_team, t_ccg, t_brk, t_mu, t_how) = st.tabs(
+    ["Schedule", "Rankings", "Forecast", "Standings", "Team", "Championship games", "Bracket",
+     "Matchups & power ranking", "How it works"])
 
 # =============================================================================
 # Schedule  (regular season weeks + week 14 = the championship games)
@@ -657,6 +658,70 @@ with t_brk:
                     game_row(SimpleNamespace(**pg.loc[code].to_dict()), "po", code)
             if not any_:
                 st.caption("Set once the previous round is picked.")
+
+# =============================================================================
+# Matchups & power ranking - the game model, read from its precomputed tables (no computation here)
+# =============================================================================
+with t_mu:
+    if base.wp is None:
+        st.info("The game model's tables are not available.")
+    else:
+        st.subheader("Head to head")
+        st.caption(f"Any two FBS teams, with every team's inputs as of the last update{WP_ASOF}. The game model "
+                   "predicts the margin; the win probability is the one that margin implies. Real results only - "
+                   "your picks do not change these numbers.")
+        teams_mu = sorted(base.wp.rankings["team"])
+        c1, c2, c3 = st.columns([4, 4, 3])
+        ta = c1.selectbox("Team A", teams_mu, index=teams_mu.index("Notre Dame") if "Notre Dame" in teams_mu else 0,
+                          key="mu_a")
+        tb = c2.selectbox("Team B", teams_mu, index=teams_mu.index("Georgia") if "Georgia" in teams_mu else 1,
+                          key="mu_b")
+        site = c3.radio("Where", ["Neutral site", f"at {ta}", f"at {tb}"], key="mu_site")
+        if ta == tb:
+            st.warning("Pick two different teams.")
+        else:
+            if site == "Neutral site":
+                p_a, m_a = base.wp.pair(ta, tb, True)
+            elif site == f"at {ta}":
+                p_a, m_a = base.wp.pair(ta, tb, False)
+            else:
+                p_b, m_b = base.wp.pair(tb, ta, False)
+                p_a, m_a = 1 - p_b, -m_b
+            fav, pf, mf = (ta, p_a, m_a) if m_a >= 0 else (tb, 1 - p_a, -m_a)
+            k1, k2, k3 = st.columns(3)
+            k1.metric(f"{ta} win probability", pct(p_a))
+            k2.metric(f"{tb} win probability", pct(1 - p_a))
+            k3.metric("Predicted margin", f"{fav} by {mf:.1f}")
+            rows_mu = []
+            for lab, (p_, m_) in (("Neutral site", base.wp.pair(ta, tb, True)), (f"at {ta}", base.wp.pair(ta, tb, False)),
+                                  (f"at {tb}", tuple(1 - v if i == 0 else -v for i, v in enumerate(base.wp.pair(tb, ta, False))))):
+                rows_mu.append({"site": lab, f"{ta} win probability": p_, f"{ta} predicted margin": round(m_, 1)})
+            st.dataframe(pd.DataFrame(rows_mu), hide_index=True, width="stretch",
+                         column_config={f"{ta} win probability": st.column_config.ProgressColumn(
+                             f"{ta} win probability", format="percent", min_value=0, max_value=1),
+                             f"{ta} predicted margin": st.column_config.NumberColumn(format="%+.1f")})
+
+        st.subheader("Power ranking")
+        st.caption("The game model's ranking of every FBS team (the method from our college basketball model): every "
+                   "possible neutral-site matchup is predicted, and a team scores by being likely to beat teams that "
+                   "are themselves hard to beat (a Markov chain over those win probabilities). Expected win % = its "
+                   "average chance of beating every other FBS team on a neutral field. This ranks how GOOD teams are "
+                   "right now - not their resume, and not what the committee will do (that is the Rankings tab).")
+        R_mu = base.wp.rankings.copy()
+        n_mu = st.radio("Show", [25, 50, len(R_mu)], horizontal=True, key="mu_n",
+                        format_func=lambda n: "All teams" if n == len(R_mu) else f"Top {n}")
+        R_mu["record"] = R_mu["team"].map(REC) if "REC" in globals() else None
+        cols_mu = ["MR_Rank", "team", "record", "conference", "MR_Score", "Exp_Wins_pct", "neutral_margin_vs_average",
+                   "mov_elo"]
+        st.dataframe(R_mu.head(n_mu)[[c for c in cols_mu if c in R_mu]], hide_index=True, width="stretch",
+                     height=35 * min(n_mu, 30) + 40,
+                     column_config={"MR_Rank": st.column_config.NumberColumn("rank"),
+                                    "MR_Score": st.column_config.NumberColumn("power score", format="%.2f",
+                                                                              help="Markov score; 1.00 = an average FBS team"),
+                                    "Exp_Wins_pct": st.column_config.NumberColumn("expected win % vs all FBS", format="%.1f"),
+                                    "neutral_margin_vs_average": st.column_config.NumberColumn(
+                                        "avg neutral margin vs FBS", format="%+.1f"),
+                                    "mov_elo": st.column_config.NumberColumn("margin Elo", format="%.0f")})
 
 # =============================================================================
 # How it works
