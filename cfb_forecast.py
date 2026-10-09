@@ -64,7 +64,7 @@ def build_plan(base):
 
     def group(t):
         if t == "Notre Dame":
-            return "__POWER_INDEP__"
+            return "ACC"            # Notre Dame: de facto ACC for the offseason pull only (fixed 2026-10-09; was a group of one = no pull)
         c = base.conf_hist.get((base.start_season, t))
         return "__OTHER_INDEP__" if (c is None or c == "FBS Independents") else c
     groups = {}

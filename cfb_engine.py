@@ -111,7 +111,7 @@ def run_elo(g, p, start_ratings=None, start_season=None, conf=None):
 
     def regress_group(team, season):
         if team == "Notre Dame":
-            return "__POWER_INDEP__"
+            return "ACC"            # Notre Dame: de facto ACC for the offseason pull only (fixed 2026-10-09; was a group of one = no pull)
         c = conf.get((season, team))
         if c is None or c == "FBS Independents":
             return "__OTHER_INDEP__"
